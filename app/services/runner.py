@@ -34,6 +34,8 @@ class TradingBotRunner:
 
         while not stop_event.is_set():
             try:
+                await self.notifier.send_message("در حال یافتن فرصت مناسب در چارت هستم...")
+
                 analyses = await self._build_analyses()
                 current_session = self.analyzer.session_label(datetime.now(UTC))
                 plan = self.signal_builder.build_plan(
@@ -51,6 +53,7 @@ class TradingBotRunner:
                         LOGGER.warning("Trade plan was generated but telegram delivery failed.")
                 else:
                     LOGGER.info("No new signal sent.")
+                    await self.notifier.send_message("هنوز فرصت مناسب و معتبر برای ورود پیدا نشده است.")
                     if self.settings.send_no_trade_updates:
                         reasons, structures = self.signal_builder.build_no_trade_summary(analyses, current_session)
                         await self.notifier.send_no_trade_update(
