@@ -9,6 +9,7 @@ from pathlib import Path
 from app.config import Settings
 from app.models import TradePlan
 from app.services.analysis import SMCAnalyzer
+from app.services.backtest import BacktestService
 from app.services.market_data import build_market_data_provider
 from app.services.signals import SignalBuilder
 from app.services.telegram_notifier import TelegramNotifier
@@ -24,6 +25,13 @@ class TradingBotRunner:
         self.analyzer = SMCAnalyzer()
         self.signal_builder = SignalBuilder(settings)
         self.notifier = TelegramNotifier(settings)
+        self.backtest_service = BacktestService(
+            settings=settings,
+            provider=self.provider,
+            analyzer=self.analyzer,
+            signal_builder=self.signal_builder,
+            notifier=self.notifier,
+        )
 
     async def run_forever(self, stop_event: asyncio.Event) -> None:
         startup_sent = await self.notifier.send_message(
@@ -32,8 +40,12 @@ class TradingBotRunner:
         if not startup_sent:
             LOGGER.warning("Startup telegram message failed. Bot will continue running.")
 
+        if self.settings.enable_backtest_reports and self.settings.backtest_send_on_startup:
+            await self.backtest_service.maybe_run_and_send(force=True)
+
         while not stop_event.is_set():
             try:
+                await self.backtest_service.maybe_run_and_send(force=False)
                 await self.notifier.send_message("در حال یافتن فرصت مناسب در چارت هستم...")
 
                 analyses = await self._build_analyses()
