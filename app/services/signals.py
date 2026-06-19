@@ -8,24 +8,33 @@ class SignalBuilder:
     def __init__(self, settings: Settings) -> None:
         self.settings = settings
 
-    def build_plan(self, symbol: str, analyses: list[AnalysisResult]) -> TradePlan:
+    def build_plan(self, symbol: str, analyses: list[AnalysisResult], current_session: str) -> TradePlan:
         execution = next(item for item in analyses if item.timeframe == self.settings.execution_timeframe)
-        higher = analyses[0]
+        structures = [item.structure for item in analyses]
+        directional_structures = [item.structure for item in analyses if item.structure in {"Bullish", "Bearish"}]
+        all_aligned = len(directional_structures) == len(analyses) and len(set(directional_structures)) == 1
 
-        aligned = higher.structure == execution.structure and execution.structure in {"Bullish", "Bearish"}
-        confluences = list(dict.fromkeys([*higher.confluences, *execution.confluences]))
+        if self.settings.strict_timeframe_alignment:
+            aligned = all_aligned
+        else:
+            higher = analyses[0]
+            aligned = higher.structure == execution.structure and execution.structure in {"Bullish", "Bearish"}
 
+        confluences = list(dict.fromkeys(sum((list(item.confluences) for item in analyses), [])))
         direction = "NO TRADE"
         entry_low = entry_high = stop_loss = tp1 = tp2 = tp3 = risk_reward = None
         probability = 0
         alternative_scenario = "Wait for clearer structure, displacement, and a valid retest."
         notes: list[str] = []
 
-        if aligned and execution.entry_zone and len(confluences) >= self.settings.min_confluence_count:
+        if current_session not in self.settings.active_sessions:
+            notes.append(f"Session filter blocked entries. Current session: {current_session}")
+
+        if aligned and execution.entry_zone and len(confluences) >= self.settings.min_confluence_count and current_session in self.settings.active_sessions:
             direction = "BUY" if execution.structure == "Bullish" else "SELL"
             entry_low = execution.entry_zone.low
             entry_high = execution.entry_zone.high
-            stop_buffer = abs(entry_high - entry_low) * 0.20 or 0.10
+            stop_buffer = max(abs(entry_high - entry_low) * 0.20, 0.10)
 
             if direction == "BUY":
                 stop_loss = (execution.invalidation or entry_low) - stop_buffer
@@ -45,21 +54,21 @@ class SignalBuilder:
                 first_reward = abs(tp1 - entry_mid)
                 risk_reward = round(first_reward / risk, 2)
 
-            probability = min(90, 45 + (len(confluences) * 8))
+            probability = min(90, 45 + (len(confluences) * 6) + (2 if all_aligned else 0))
             alternative_scenario = self._build_invalidation_text(direction, stop_loss)
         else:
             if not aligned:
-                notes.append("Higher timeframe and execution timeframe are not aligned.")
+                notes.append(f"Timeframe alignment failed: {', '.join(structures)}")
             if len(confluences) < self.settings.min_confluence_count:
                 notes.append("Confluence count is below the required threshold.")
             if not execution.entry_zone:
                 notes.append("No execution-quality entry zone was found.")
 
         market_structure_text = self._build_market_structure_text(analyses)
-        liquidity_text = self._build_liquidity_text(analyses)
+        liquidity_text = self._build_liquidity_text(execution)
         smart_money_zones_text = self._build_zones_text(execution)
+        quality_score = min(10.0, round((len(confluences) * 1.5) + (1.0 if all_aligned else 0.0), 1))
 
-        quality_score = min(10.0, round(len(confluences) * 1.8, 1))
         return TradePlan(
             symbol=symbol,
             timeframe=execution.timeframe,
@@ -81,6 +90,24 @@ class SignalBuilder:
             analysis_notes=notes,
         )
 
+    def build_no_trade_summary(self, analyses: list[AnalysisResult], current_session: str) -> tuple[list[str], list[str]]:
+        reasons: list[str] = [f"Current session: {current_session}"]
+
+        structures = [f"{item.timeframe}={item.structure}" for item in analyses]
+        if self.settings.strict_timeframe_alignment:
+            if len({item.structure for item in analyses}) != 1:
+                reasons.append("Strict timeframe alignment not satisfied.")
+
+        execution = next(item for item in analyses if item.timeframe == self.settings.execution_timeframe)
+        if not execution.entry_zone:
+            reasons.append("No valid execution entry zone.")
+        if len(execution.confluences) < self.settings.min_confluence_count:
+            reasons.append("Execution timeframe confluence is below threshold.")
+        if current_session not in self.settings.active_sessions:
+            reasons.append("Current session is outside allowed trading sessions.")
+
+        return reasons, structures
+
     def _build_market_structure_text(self, analyses: list[AnalysisResult]) -> str:
         parts = []
         for item in analyses:
@@ -90,8 +117,7 @@ class SignalBuilder:
             )
         return "\n".join(parts)
 
-    def _build_liquidity_text(self, analyses: list[AnalysisResult]) -> str:
-        item = analyses[-1]
+    def _build_liquidity_text(self, item: AnalysisResult) -> str:
         return (
             f"Sweeps: {', '.join(item.liquidity_sweeps) or 'none'}\n"
             f"Internal liquidity: {', '.join(item.internal_liquidity) or 'none'}\n"
@@ -107,9 +133,7 @@ class SignalBuilder:
             if isinstance(zone, list):
                 if not zone:
                     return "none"
-                return "; ".join(
-                    f"{z.label} [{z.low:.2f}-{z.high:.2f}]" for z in zone
-                )
+                return "; ".join(f"{z.label} [{z.low:.2f}-{z.high:.2f}]" for z in zone)
             return f"{zone.label} [{zone.low:.2f}-{zone.high:.2f}]"
 
         return (
