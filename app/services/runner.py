@@ -3,8 +3,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
-from dataclasses import asdict
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 from app.config import Settings
@@ -27,19 +26,39 @@ class TradingBotRunner:
         self.notifier = TelegramNotifier(settings)
 
     async def run_forever(self, stop_event: asyncio.Event) -> None:
-        await self.notifier.send_message(
+        startup_sent = await self.notifier.send_message(
             "XAUUSD signal engine started. Waiting for top-down confluence."
         )
+        if not startup_sent:
+            LOGGER.warning("Startup telegram message failed. Bot will continue running.")
 
         while not stop_event.is_set():
             try:
-                plan = await self._build_trade_plan()
+                analyses = await self._build_analyses()
+                current_session = self.analyzer.session_label(datetime.now(UTC))
+                plan = self.signal_builder.build_plan(
+                    symbol=self.settings.symbol,
+                    analyses=analyses,
+                    current_session=current_session,
+                )
+
                 if await self._should_send(plan):
                     risk_lines = self._build_risk_lines(plan)
-                    await self.notifier.send_plan(plan, risk_lines)
-                    self._save_state(plan)
+                    sent = await self.notifier.send_plan(plan, risk_lines)
+                    if sent:
+                        self._save_state(plan)
+                    else:
+                        LOGGER.warning("Trade plan was generated but telegram delivery failed.")
                 else:
                     LOGGER.info("No new signal sent.")
+                    if self.settings.send_no_trade_updates:
+                        reasons, structures = self.signal_builder.build_no_trade_summary(analyses, current_session)
+                        await self.notifier.send_no_trade_update(
+                            symbol=self.settings.symbol,
+                            timeframe=self.settings.execution_timeframe,
+                            reason_lines=reasons,
+                            structure_lines=structures,
+                        )
             except Exception as exc:
                 LOGGER.exception("Signal cycle failed: %s", exc)
                 await self.notifier.send_message(f"Signal cycle failed: {exc}")
@@ -49,7 +68,7 @@ class TradingBotRunner:
             except asyncio.TimeoutError:
                 continue
 
-    async def _build_trade_plan(self) -> TradePlan:
+    async def _build_analyses(self) -> list:
         analyses = []
         for timeframe in self.settings.top_down_timeframes:
             candles = await self.provider.fetch_ohlc(
@@ -58,7 +77,7 @@ class TradingBotRunner:
                 limit=self.settings.bars_limit,
             )
             analyses.append(self.analyzer.analyze(timeframe=timeframe, candles=candles))
-        return self.signal_builder.build_plan(symbol=self.settings.symbol, analyses=analyses)
+        return analyses
 
     async def _should_send(self, plan: TradePlan) -> bool:
         if not plan.is_trade:
@@ -76,7 +95,7 @@ class TradingBotRunner:
         if last_time_str:
             last_time = datetime.fromisoformat(last_time_str)
             min_gap = timedelta(minutes=self.settings.min_signal_interval_minutes)
-            if datetime.now(timezone.utc) - last_time < min_gap:
+            if datetime.now(UTC) - last_time < min_gap:
                 if (
                     last_direction == plan.direction
                     and round(float(last_entry_low or 0), 2) == round(float(plan.entry_low or 0), 2)
@@ -115,7 +134,7 @@ class TradingBotRunner:
 
     def _save_state(self, plan: TradePlan) -> None:
         payload = {
-            "last_sent_at": datetime.now(timezone.utc).isoformat(),
+            "last_sent_at": datetime.now(UTC).isoformat(),
             "direction": plan.direction,
             "entry_low": plan.entry_low,
             "entry_high": plan.entry_high,
