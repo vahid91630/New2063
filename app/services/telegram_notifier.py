@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import logging
+from pathlib import Path
 
 from telegram import Bot
 from telegram.error import TelegramError
@@ -32,6 +33,22 @@ class TelegramNotifier:
             return False
         except Exception as exc:
             LOGGER.exception("Unexpected telegram error: %s", exc)
+            return False
+
+    async def send_photo(self, photo_path: Path, caption: str | None = None) -> bool:
+        try:
+            with photo_path.open("rb") as image_file:
+                await self.bot.send_photo(
+                    chat_id=self.settings.telegram_chat_id,
+                    photo=image_file,
+                    caption=caption or "",
+                )
+            return True
+        except TelegramError as exc:
+            LOGGER.exception("Telegram send_photo failed: %s", exc)
+            return False
+        except Exception as exc:
+            LOGGER.exception("Unexpected telegram photo error: %s", exc)
             return False
 
     async def send_plan(self, plan: TradePlan, risk_lines: str) -> bool:
