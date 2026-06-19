@@ -30,6 +30,13 @@ class Settings:
     send_no_trade_updates: bool
     active_sessions: Tuple[str, ...]
     session_timezone: str
+    enable_backtest_reports: bool
+    backtest_interval_hours: int
+    backtest_lookback_bars: int
+    backtest_warmup_bars: int
+    backtest_max_holding_bars: int
+    backtest_entry_wait_bars: int
+    backtest_send_on_startup: bool
 
 
 def _get_required(name: str) -> str:
@@ -69,4 +76,11 @@ def load_settings() -> Settings:
         send_no_trade_updates=_bool_env("SEND_NO_TRADE_UPDATES", "false"),
         active_sessions=_csv_to_tuple(os.getenv("ACTIVE_SESSIONS", "london,newyork")),
         session_timezone=os.getenv("SESSION_TIMEZONE", "UTC").strip() or "UTC",
+        enable_backtest_reports=_bool_env("ENABLE_BACKTEST_REPORTS", "true"),
+        backtest_interval_hours=int(os.getenv("BACKTEST_INTERVAL_HOURS", "24")),
+        backtest_lookback_bars=int(os.getenv("BACKTEST_LOOKBACK_BARS", "700")),
+        backtest_warmup_bars=int(os.getenv("BACKTEST_WARMUP_BARS", "150")),
+        backtest_max_holding_bars=int(os.getenv("BACKTEST_MAX_HOLDING_BARS", "32")),
+        backtest_entry_wait_bars=int(os.getenv("BACKTEST_ENTRY_WAIT_BARS", "8")),
+        backtest_send_on_startup=_bool_env("BACKTEST_SEND_ON_STARTUP", "true"),
     )
