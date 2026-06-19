@@ -1,9 +1,15 @@
 from __future__ import annotations
 
+import logging
+
 from telegram import Bot
+from telegram.error import TelegramError
 
 from app.config import Settings
 from app.models import TradePlan
+
+LOGGER = logging.getLogger(__name__)
+MAX_MESSAGE_LENGTH = 4000
 
 
 class TelegramNotifier:
@@ -11,14 +17,24 @@ class TelegramNotifier:
         self.settings = settings
         self.bot = Bot(token=settings.telegram_bot_token)
 
-    async def send_message(self, text: str) -> None:
-        await self.bot.send_message(
-            chat_id=self.settings.telegram_chat_id,
-            text=text,
-            disable_web_page_preview=True,
-        )
+    async def send_message(self, text: str) -> bool:
+        chunks = self._chunk_text(text)
+        try:
+            for chunk in chunks:
+                await self.bot.send_message(
+                    chat_id=self.settings.telegram_chat_id,
+                    text=chunk,
+                    disable_web_page_preview=True,
+                )
+            return True
+        except TelegramError as exc:
+            LOGGER.exception("Telegram send_message failed: %s", exc)
+            return False
+        except Exception as exc:
+            LOGGER.exception("Unexpected telegram error: %s", exc)
+            return False
 
-    async def send_plan(self, plan: TradePlan, risk_lines: str) -> None:
+    async def send_plan(self, plan: TradePlan, risk_lines: str) -> bool:
         lines = [
             f"XAUUSD Signal Bot | {plan.timeframe}",
             "",
@@ -51,12 +67,39 @@ class TelegramNotifier:
             "",
             f"FINAL DECISION:\n{plan.direction}",
         ]
+
         if plan.confluences:
             lines.extend(["", "CONFLUENCES:", *[f"- {item}" for item in plan.confluences]])
+
         if plan.analysis_notes:
             lines.extend(["", "NOTES:", *[f"- {item}" for item in plan.analysis_notes]])
 
-        await self.send_message("\n".join(lines))
+        return await self.send_message("\n".join(lines))
+
+    async def send_no_trade_update(
+        self,
+        symbol: str,
+        timeframe: str,
+        reason_lines: list[str],
+        structure_lines: list[str],
+    ) -> bool:
+        text = "\n".join(
+            [
+                f"{symbol} | {timeframe}",
+                "",
+                "FINAL DECISION:",
+                "NO TRADE",
+                "",
+                "WAIT FOR CONFIRMATION",
+                "",
+                "WHY:",
+                *[f"- {line}" for line in reason_lines],
+                "",
+                "STRUCTURE SNAPSHOT:",
+                *[f"- {line}" for line in structure_lines],
+            ]
+        )
+        return await self.send_message(text)
 
     def _price(self, value: float | None) -> str:
         return "n/a" if value is None else f"{value:.2f}"
@@ -65,3 +108,24 @@ class TelegramNotifier:
         if low is None or high is None:
             return "n/a"
         return f"{low:.2f} - {high:.2f}"
+
+    def _chunk_text(self, text: str) -> list[str]:
+        if len(text) <= MAX_MESSAGE_LENGTH:
+            return [text]
+
+        chunks: list[str] = []
+        current = []
+        current_len = 0
+
+        for line in text.splitlines(True):
+            if current_len + len(line) > MAX_MESSAGE_LENGTH:
+                chunks.append("".join(current).rstrip())
+                current = [line]
+                current_len = len(line)
+            else:
+                current.append(line)
+                current_len += len(line)
+
+        if current:
+            chunks.append("".join(current).rstrip())
+        return chunks
