@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from datetime import UTC, datetime
 
 from app.models import AnalysisResult, Candle, PriceZone
 
@@ -74,12 +75,24 @@ class SMCAnalyzer:
             dealing_range_high=range_high,
         )
 
+    def session_label(self, when: datetime | None = None) -> str:
+        now = when or datetime.now(UTC)
+        hour = now.hour
+
+        if 7 <= hour < 11:
+            return "london"
+        if 12 <= hour < 17:
+            return "newyork"
+        if 0 <= hour < 5:
+            return "asia"
+        return "off_session"
+
     def _find_swings(self, candles: list[Candle], kind: str) -> list[SwingPoint]:
         points: list[SwingPoint] = []
         for i in range(self.swing_window, len(candles) - self.swing_window):
             center = candles[i]
-            left = candles[i - self.swing_window:i]
-            right = candles[i + 1:i + self.swing_window + 1]
+            left = candles[i - self.swing_window : i]
+            right = candles[i + 1 : i + self.swing_window + 1]
             if kind == "high":
                 if all(center.high > item.high for item in left + right):
                     points.append(SwingPoint(index=i, price=center.high, kind=kind))
@@ -126,13 +139,11 @@ class SMCAnalyzer:
             if last_close < recent_low:
                 bos.append(f"Close broke below swing low {recent_low:.2f}")
 
-        if structure == "Bullish" and lows:
-            if last_close < lows[-1].price:
-                choch.append(f"Loss of bullish character below {lows[-1].price:.2f}")
+        if structure == "Bullish" and lows and last_close < lows[-1].price:
+            choch.append(f"Loss of bullish character below {lows[-1].price:.2f}")
 
-        if structure == "Bearish" and highs:
-            if last_close > highs[-1].price:
-                choch.append(f"Loss of bearish character above {highs[-1].price:.2f}")
+        if structure == "Bearish" and highs and last_close > highs[-1].price:
+            choch.append(f"Loss of bearish character above {highs[-1].price:.2f}")
 
         return bos, choch
 
@@ -180,6 +191,7 @@ class SMCAnalyzer:
                 sweeps.append(f"Short-term buyside sweep above {previous.high:.2f}")
             elif last.low < previous.low and last.close > previous.low:
                 sweeps.append(f"Short-term sellside sweep below {previous.low:.2f}")
+
         return sweeps
 
     def _classify_liquidity(
